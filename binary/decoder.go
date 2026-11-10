@@ -12,14 +12,15 @@ import (
 type binaryDecoder struct {
 	data  []byte
 	index int
+	depth int
 }
 
 func newDecoder(data []byte) *binaryDecoder {
-	return &binaryDecoder{data, 0}
+	return &binaryDecoder{data: data}
 }
 
 func (r *binaryDecoder) checkEOS(length int) error {
-	if r.index+length > len(r.data) {
+	if length < 0 || length > len(r.data)-r.index {
 		return io.EOF
 	}
 
@@ -110,6 +111,9 @@ func (r *binaryDecoder) readPacked8(tag int) (string, error) {
 
 	ret := build.String()
 	if startByte>>7 != 0 {
+		if len(ret) == 0 {
+			return "", fmt.Errorf("invalid empty packed string")
+		}
 		ret = ret[:len(ret)-1]
 	}
 	return ret, nil
@@ -166,6 +170,12 @@ func (r *binaryDecoder) readListSize(tag int) (int, error) {
 }
 
 func (r *binaryDecoder) read(string bool) (any, error) {
+	const maxDecodeDepth = 64
+	if r.depth >= maxDecodeDepth {
+		return nil, fmt.Errorf("binary decoding exceeds maximum depth %d", maxDecodeDepth)
+	}
+	r.depth++
+	defer func() { r.depth-- }()
 	tagByte, err := r.readByte()
 	if err != nil {
 		return nil, err
@@ -230,12 +240,19 @@ func (r *binaryDecoder) readJIDPair() (any, error) {
 	server, err := r.read(true)
 	if err != nil {
 		return nil, err
-	} else if server == nil {
-		return nil, ErrInvalidJIDType
-	} else if user == nil {
-		return types.NewJID("", server.(string)), nil
 	}
-	return types.NewJID(user.(string), server.(string)), nil
+	serverStr, ok := server.(string)
+	if !ok {
+		return nil, ErrInvalidJIDType
+	}
+	if user == nil {
+		return types.NewJID("", serverStr), nil
+	}
+	userStr, ok := user.(string)
+	if !ok {
+		return nil, ErrInvalidJIDType
+	}
+	return types.NewJID(userStr, serverStr), nil
 }
 
 func (r *binaryDecoder) readInteropJID() (any, error) {
@@ -257,8 +274,12 @@ func (r *binaryDecoder) readInteropJID() (any, error) {
 	} else if server != types.InteropServer {
 		return nil, fmt.Errorf("%w: expected %q, got %q", ErrInvalidJIDType, types.InteropServer, server)
 	}
+	userStr, ok := user.(string)
+	if !ok {
+		return nil, ErrInvalidJIDType
+	}
 	return types.JID{
-		User:       user.(string),
+		User:       userStr,
 		Device:     uint16(device),
 		Integrator: uint16(integrator),
 		Server:     types.InteropServer,
@@ -280,8 +301,12 @@ func (r *binaryDecoder) readFBJID() (any, error) {
 	} else if server != types.MessengerServer {
 		return nil, fmt.Errorf("%w: expected %q, got %q", ErrInvalidJIDType, types.MessengerServer, server)
 	}
+	userStr, ok := user.(string)
+	if !ok {
+		return nil, ErrInvalidJIDType
+	}
 	return types.JID{
-		User:   user.(string),
+		User:   userStr,
 		Device: uint16(device),
 		Server: server.(string),
 	}, nil
@@ -300,7 +325,11 @@ func (r *binaryDecoder) readADJID() (any, error) {
 	if err != nil {
 		return nil, err
 	}
-	return types.NewADJID(user.(string), agent, device), nil
+	userStr, ok := user.(string)
+	if !ok {
+		return nil, ErrInvalidJIDType
+	}
+	return types.NewADJID(userStr, agent, device), nil
 }
 
 func (r *binaryDecoder) readAttributes(n int) (Attrs, error) {
@@ -335,6 +364,10 @@ func (r *binaryDecoder) readList(tag int) ([]Node, error) {
 		return nil, err
 	}
 
+	// Every child node requires at least a list marker and a description token.
+	if size > (len(r.data)-r.index)/2 {
+		return nil, io.ErrUnexpectedEOF
+	}
 	ret := make([]Node, size)
 	for i := range size {
 		n, err := r.readNode()

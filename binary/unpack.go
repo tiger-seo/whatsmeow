@@ -9,9 +9,16 @@ package binary
 import (
 	"bytes"
 	"compress/zlib"
+	"errors"
 	"fmt"
 	"io"
 )
+
+// MaxUnpackedFrameSize is the maximum size of an unpacked WhatsApp frame.
+const MaxUnpackedFrameSize = 16 << 20
+
+// ErrFrameTooLarge indicates that a frame exceeds MaxUnpackedFrameSize.
+var ErrFrameTooLarge = errors.New("unpacked frame exceeds size limit")
 
 // Unpack unpacks the given decrypted data from the WhatsApp web API.
 //
@@ -19,13 +26,23 @@ import (
 // (without the first byte). There's currently no corresponding Pack function because Marshal
 // already returns the data with a leading zero (i.e. not compressed).
 func Unpack(data []byte) ([]byte, error) {
+	if len(data) == 0 {
+		return nil, io.ErrUnexpectedEOF
+	}
 	dataType, data := data[0], data[1:]
 	if 2&dataType > 0 {
-		if decompressor, err := zlib.NewReader(bytes.NewReader(data)); err != nil {
+		decompressor, err := zlib.NewReader(bytes.NewReader(data))
+		if err != nil {
 			return nil, fmt.Errorf("failed to create zlib reader: %w", err)
-		} else if data, err = io.ReadAll(decompressor); err != nil {
+		}
+		defer decompressor.Close()
+		data, err = io.ReadAll(io.LimitReader(decompressor, MaxUnpackedFrameSize+1))
+		if err != nil {
 			return nil, err
 		}
+	}
+	if len(data) > MaxUnpackedFrameSize {
+		return nil, ErrFrameTooLarge
 	}
 	return data, nil
 }
