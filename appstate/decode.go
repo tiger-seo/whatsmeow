@@ -148,6 +148,10 @@ func (proc *Processor) decodeMutation(
 		return
 	}
 	content := bytes.Clone(mutation.GetRecord().GetValue().GetBlob())
+	if len(content) < 32 {
+		err = fmt.Errorf("mutation #%d value is too short for a MAC", i+1)
+		return
+	}
 	content, valueMAC = content[:len(content)-32], content[len(content)-32:]
 	if validateMACs {
 		expectedValueMAC := generateContentMAC(mutation.GetOperation(), content, keyID, keys.ValueMAC)
@@ -155,6 +159,10 @@ func (proc *Processor) decodeMutation(
 			err = fmt.Errorf("failed to verify mutation #%d with key %X: %w", i+1, keyID, ErrMismatchingContentMAC)
 			return
 		}
+	}
+	if len(content) < 16 {
+		err = fmt.Errorf("mutation #%d value is too short for an IV", i+1)
+		return
 	}
 	iv, content := content[:16], content[16:]
 	plaintext, err := cbcutil.Decrypt(keys.ValueEncryption, iv, content)
@@ -326,6 +334,9 @@ func (proc *Processor) validatePatch(
 			if hmac.Equal(patch.Mutations[i].GetRecord().GetIndex().GetBlob(), indexMAC) {
 				if patch.Mutations[i].GetOperation() == waServerSync.SyncdMutation_SET {
 					value := patch.Mutations[i].GetRecord().GetValue().GetBlob()
+					if len(value) < 32 {
+						return nil, fmt.Errorf("mutation #%d value is too short for a MAC", i+1)
+					}
 					return value[len(value)-32:], nil
 				}
 				// Found a REMOVE operation, no previous value
@@ -353,7 +364,12 @@ func (proc *Processor) validatePatch(
 			return
 		}
 		err = nil
-		patchMAC := generatePatchMAC(patch, patchName, keys.PatchMAC, patch.GetVersion().GetVersion())
+		var patchMAC []byte
+		patchMAC, err = generatePatchMAC(patch, patchName, keys.PatchMAC, patch.GetVersion().GetVersion())
+		if err != nil {
+			err = fmt.Errorf("failed to generate patch MAC: %w", err)
+			return
+		}
 		if !hmac.Equal(patchMAC, patch.GetPatchMAC()) {
 			err = fmt.Errorf("failed to verify patch v%d: %w", version, ErrMismatchingPatchMAC)
 			return

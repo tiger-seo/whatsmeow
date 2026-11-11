@@ -43,6 +43,9 @@ func (hs *HashState) updateHash(mutations []*waServerSync.SyncdMutation, getPrev
 	for i, mutation := range mutations {
 		if mutation.GetOperation() == waServerSync.SyncdMutation_SET {
 			value := mutation.GetRecord().GetValue().GetBlob()
+			if len(value) < 32 {
+				return warnings, fmt.Errorf("mutation #%d value is too short for a MAC", i+1)
+			}
 			added = append(added, value[len(value)-32:])
 		}
 		indexMAC := mutation.GetRecord().GetIndex().GetBlob()
@@ -82,16 +85,19 @@ func (hs *HashState) generateSnapshotMAC(name WAPatchName, key []byte) []byte {
 	return concatAndHMAC(sha256.New, key, hs.Hash[:], uint64ToBytes(hs.Version), []byte(name))
 }
 
-func generatePatchMAC(patch *waServerSync.SyncdPatch, name WAPatchName, key []byte, version uint64) []byte {
+func generatePatchMAC(patch *waServerSync.SyncdPatch, name WAPatchName, key []byte, version uint64) ([]byte, error) {
 	dataToHash := make([][]byte, len(patch.GetMutations())+3)
 	dataToHash[0] = patch.GetSnapshotMAC()
 	for i, mutation := range patch.Mutations {
 		val := mutation.GetRecord().GetValue().GetBlob()
+		if len(val) < 32 {
+			return nil, fmt.Errorf("mutation #%d value is too short for a MAC", i+1)
+		}
 		dataToHash[i+1] = val[len(val)-32:]
 	}
 	dataToHash[len(dataToHash)-2] = uint64ToBytes(version)
 	dataToHash[len(dataToHash)-1] = []byte(name)
-	return concatAndHMAC(sha256.New, key, dataToHash...)
+	return concatAndHMAC(sha256.New, key, dataToHash...), nil
 }
 
 func generateContentMAC(operation waServerSync.SyncdMutation_SyncdOperation, data, keyID, key []byte) []byte {

@@ -326,7 +326,10 @@ func (proc *Processor) EncodePatch(ctx context.Context, keyID []byte, state Hash
 		KeyID:       &waServerSync.KeyId{ID: keyID},
 		Mutations:   mutations,
 	}
-	syncdPatch.PatchMAC = generatePatchMAC(syncdPatch, patchInfo.Type, keys.PatchMAC, state.Version)
+	syncdPatch.PatchMAC, err = generatePatchMAC(syncdPatch, patchInfo.Type, keys.PatchMAC, state.Version)
+	if err != nil {
+		return nil, fmt.Errorf("failed to generate patch MAC: %w", err)
+	}
 
 	result, err := proto.Marshal(syncdPatch)
 	if err != nil {
