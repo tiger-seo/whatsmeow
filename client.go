@@ -1098,6 +1098,7 @@ func (cli *Client) dispatchEvent(evt any) (handlerFailed bool) {
 		err := recover()
 		if err != nil {
 			cli.Log.Errorf("Event handler panicked while handling a %T: %v\n%s", evt, err, debug.Stack())
+			handlerFailed = true
 		}
 	}()
 	for _, handler := range cli.eventHandlers {
