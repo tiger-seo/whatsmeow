@@ -35,6 +35,22 @@ import (
 // Number of sent messages to cache in memory for handling retry receipts.
 const recentMessagesSize = 256
 
+// Number of messages whose retry counts are kept in memory.
+const maxRetryCounters = 4096
+
+// bumpRetryCounter increments and returns the retry count for key.
+//
+// A count is only useful while its message is still being retried, but nothing says when that
+// ends, so the map is emptied when it is full. Forgetting a count allows a few more retries for a
+// message at most; every one of them still needs a new request from the other side.
+func bumpRetryCounter[K comparable](counters map[K]int, key K) int {
+	if _, known := counters[key]; !known && len(counters) >= maxRetryCounters {
+		clear(counters)
+	}
+	counters[key]++
+	return counters[key]
+}
+
 type recentMessageKey struct {
 	To types.JID
 	ID types.MessageID
@@ -236,8 +252,7 @@ func (cli *Client) handleRetryReceipt(ctx context.Context, receipt *events.Recei
 
 	retryKey := incomingRetryKey{receipt.Sender, messageID}
 	cli.incomingRetryRequestCounterLock.Lock()
-	cli.incomingRetryRequestCounter[retryKey]++
-	internalCounter := cli.incomingRetryRequestCounter[retryKey]
+	internalCounter := bumpRetryCounter(cli.incomingRetryRequestCounter, retryKey)
 	cli.incomingRetryRequestCounterLock.Unlock()
 	if internalCounter >= 10 {
 		cli.Log.Warnf("Dropping retry request from %s for %s: internal retry counter is %d", messageID, receipt.Sender, internalCounter)
@@ -478,8 +493,7 @@ func (cli *Client) sendRetryReceipt(ctx context.Context, node *waBinary.Node, in
 	}
 
 	cli.messageRetriesLock.Lock()
-	cli.messageRetries[id]++
-	retryCount := cli.messageRetries[id]
+	retryCount := bumpRetryCounter(cli.messageRetries, id)
 	// In case the message is a retry response, and we restarted in between, find the count from the message
 	if retryCount == 1 && retryCountInMsg > 0 {
 		retryCount = retryCountInMsg + 1
