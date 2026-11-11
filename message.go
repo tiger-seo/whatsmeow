@@ -788,6 +788,12 @@ func (cli *Client) SendHistorySyncServerErrorReceipt(ctx context.Context, msgID 
 	return nil
 }
 
+// MaxHistorySyncSize is the maximum size of one history sync blob after decompression.
+const MaxHistorySyncSize = 128 << 20
+
+// ErrHistorySyncTooLarge is returned by [Client.DownloadHistorySync] for a blob that expands past [MaxHistorySyncSize].
+var ErrHistorySyncTooLarge = errors.New("history sync blob exceeds size limit after decompression")
+
 // DownloadHistorySync will download and parse the history sync blob from the given history sync notification.
 //
 // You only need to call this manually if you set [Client.ManualHistorySyncDownload] to true.
@@ -803,8 +809,10 @@ func (cli *Client) DownloadHistorySync(ctx context.Context, notif *waE2E.History
 	var historySync waHistorySync.HistorySync
 	if reader, err := zlib.NewReader(bytes.NewReader(data)); err != nil {
 		return nil, fmt.Errorf("failed to prepare to decompress: %w", err)
-	} else if rawData, err := io.ReadAll(reader); err != nil {
+	} else if rawData, err := io.ReadAll(io.LimitReader(reader, MaxHistorySyncSize+1)); err != nil {
 		return nil, fmt.Errorf("failed to decompress: %w", err)
+	} else if len(rawData) > MaxHistorySyncSize {
+		return nil, ErrHistorySyncTooLarge
 	} else if err = proto.Unmarshal(rawData, &historySync); err != nil {
 		return nil, fmt.Errorf("failed to unmarshal: %w", err)
 	}
