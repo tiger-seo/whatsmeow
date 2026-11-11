@@ -138,6 +138,22 @@ func TestOversizedFrameClosesConnection(t *testing.T) {
 	}
 }
 
+func TestDecodeLimitClosesConnection(t *testing.T) {
+	// One list holds at most 65535 children, so spread the nodes over two lists.
+	list := waBinary.Node{Tag: "list", Content: make([]waBinary.Node, 40000)}
+	for i := range list.Content.([]waBinary.Node) {
+		list.Content.([]waBinary.Node)[i].Tag = "message"
+	}
+	cli := NewClient(&store.Device{}, waLog.Noop)
+	ctx := context.Background()
+	conn, closed := newReceiveConn(2)
+	cli.handleConnFrame(ctx, ctx, marshalFrame(t, waBinary.Node{Tag: "root", Content: []waBinary.Node{list, list}}), make(chan *waBinary.Node, 1), conn)
+	overload, ok := cli.LatestReceiveQueueOverload()
+	if *closed != 1 || !ok || overload != (ReceiveQueueOverload{Generation: 2, Reason: ReceiveDecodeLimit}) {
+		t.Errorf("closed %d times, overload record %+v (found: %v)", *closed, overload, ok)
+	}
+}
+
 func TestOverloadRecordKeepsNewestGeneration(t *testing.T) {
 	cli := NewClient(&store.Device{}, waLog.Noop)
 	newer, _ := newReceiveConn(5)

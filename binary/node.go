@@ -128,6 +128,9 @@ func Marshal(n Node) ([]byte, error) {
 
 // Unmarshal decodes WhatsApp's binary XML representation into a Node.
 func Unmarshal(data []byte) (*Node, error) {
+	if len(data) > MaxUnpackedFrameSize {
+		return nil, ErrFrameTooLarge
+	}
 	r := newDecoder(data)
 	n, err := r.readNode()
 	if err != nil {

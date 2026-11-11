@@ -260,6 +260,8 @@ const (
 	ReceiveQueueItemLimit ReceiveQueueOverloadReason = "item_limit"
 	// ReceiveFrameSizeLimit means a frame was larger than [waBinary.MaxUnpackedFrameSize] after unpacking.
 	ReceiveFrameSizeLimit ReceiveQueueOverloadReason = "frame_size_limit"
+	// ReceiveDecodeLimit means a frame had more nodes or nesting levels than the decoder accepts.
+	ReceiveDecodeLimit ReceiveQueueOverloadReason = "decode_limit"
 )
 
 // ReceiveQueueOverload describes a connection that was closed because it reached a receive limit.
@@ -957,7 +959,11 @@ func (cli *Client) handleConnFrame(ctx, evtCtx context.Context, data []byte, que
 	node, err := waBinary.Unmarshal(decompressed)
 	if err != nil {
 		cli.Log.Warnf("Failed to decode node in frame: %v", err)
-		cli.Log.Debugf("Errored frame hex: %s", hex.EncodeToString(decompressed))
+		if errors.Is(err, waBinary.ErrDecodeLimit) {
+			cli.closeOverloadedConn(conn, ReceiveDecodeLimit)
+		} else {
+			cli.Log.Debugf("Errored frame hex: %s", hex.EncodeToString(decompressed))
+		}
 		return
 	}
 	cli.recvLog.Debugf("%s", node)

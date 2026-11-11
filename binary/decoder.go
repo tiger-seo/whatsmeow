@@ -13,7 +13,11 @@ type binaryDecoder struct {
 	data  []byte
 	index int
 	depth int
+	nodes int
 }
+
+// maxDecodedNodes is the maximum number of nodes in one decoded frame.
+const maxDecodedNodes = 65536
 
 func newDecoder(data []byte) *binaryDecoder {
 	return &binaryDecoder{data: data}
@@ -172,7 +176,7 @@ func (r *binaryDecoder) readListSize(tag int) (int, error) {
 func (r *binaryDecoder) read(string bool) (any, error) {
 	const maxDecodeDepth = 64
 	if r.depth >= maxDecodeDepth {
-		return nil, fmt.Errorf("binary decoding exceeds maximum depth %d", maxDecodeDepth)
+		return nil, fmt.Errorf("%w: more than %d levels", ErrDecodeLimit, maxDecodeDepth)
 	}
 	r.depth++
 	defer func() { r.depth-- }()
@@ -368,21 +372,26 @@ func (r *binaryDecoder) readList(tag int) ([]Node, error) {
 	if size > (len(r.data)-r.index)/2 {
 		return nil, io.ErrUnexpectedEOF
 	}
-	ret := make([]Node, size)
-	for i := range size {
+	// Grow the list as children are decoded instead of trusting the declared size.
+	ret := []Node{}
+	for range size {
 		n, err := r.readNode()
 
 		if err != nil {
 			return nil, err
 		}
 
-		ret[i] = *n
+		ret = append(ret, *n)
 	}
 
 	return ret, nil
 }
 
 func (r *binaryDecoder) readNode() (*Node, error) {
+	if r.nodes >= maxDecodedNodes {
+		return nil, fmt.Errorf("%w: more than %d nodes", ErrDecodeLimit, maxDecodedNodes)
+	}
+	r.nodes++
 	ret := &Node{}
 
 	size, err := r.readInt8(false)
