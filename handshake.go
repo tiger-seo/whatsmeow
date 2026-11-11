@@ -128,7 +128,11 @@ func (cli *Client) doHandshake(ctx context.Context, fs *socket.FrameSocket, ephe
 	}
 
 	queue := make(chan *waBinary.Node, handlerQueueSize)
-	ns, err := nh.Finish(fs, cli.makeFrameHandler(ctx, queue), cli.onDisconnect)
+	conn := &receiveConn{
+		generation: cli.receiveGeneration.Add(1),
+		close:      func() { fs.Close(0) },
+	}
+	ns, err := nh.Finish(fs, cli.makeConnFrameHandler(ctx, queue, conn), cli.onDisconnect)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create noise socket: %w", err)
 	}

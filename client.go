@@ -72,6 +72,9 @@ type Client struct {
 	socketWait       chan struct{}
 	handlerQueueWait chan struct{}
 
+	receiveGeneration atomic.Uint64
+	receiveOverload   atomic.Pointer[ReceiveQueueOverload]
+
 	isLoggedIn            atomic.Bool
 	paired                atomic.Bool
 	expectedDisconnect    *exsync.Event
@@ -248,6 +251,64 @@ type MessengerConfig struct {
 // Size of buffer for the channel that all incoming XML nodes go through.
 // In general it shouldn't go past a few buffered messages, but the channel is big to be safe.
 const handlerQueueSize = 2048
+
+// ReceiveQueueOverloadReason is the limit that caused a connection to be closed.
+type ReceiveQueueOverloadReason string
+
+const (
+	// ReceiveQueueItemLimit means the node handler queue was full.
+	ReceiveQueueItemLimit ReceiveQueueOverloadReason = "item_limit"
+	// ReceiveFrameSizeLimit means a frame was larger than [waBinary.MaxUnpackedFrameSize] after unpacking.
+	ReceiveFrameSizeLimit ReceiveQueueOverloadReason = "frame_size_limit"
+)
+
+// ReceiveQueueOverload describes a connection that was closed because it reached a receive limit.
+//
+// The node that hit the limit was dropped, so messages may have been missed.
+// The server is not guaranteed to deliver them again.
+type ReceiveQueueOverload struct {
+	// Generation counts connections made by this client, starting from 1.
+	Generation uint64
+	Reason     ReceiveQueueOverloadReason
+}
+
+// LatestReceiveQueueOverload returns the most recent connection that was closed because of a receive limit.
+//
+// The record is kept across reconnects, so it can be compared before and after a connection
+// to find out whether that connection was closed this way.
+func (cli *Client) LatestReceiveQueueOverload() (ReceiveQueueOverload, bool) {
+	overload := cli.receiveOverload.Load()
+	if overload == nil {
+		return ReceiveQueueOverload{}, false
+	}
+	return *overload, true
+}
+
+// receiveConn identifies one connection to the frame handler, so that a receive limit closes that
+// connection and not a later one.
+type receiveConn struct {
+	generation uint64
+	close      func()
+	overloaded atomic.Bool
+}
+
+// closeOverloadedConn drops the connection the frame came from instead of buffering without limit.
+func (cli *Client) closeOverloadedConn(conn *receiveConn, reason ReceiveQueueOverloadReason) {
+	cli.Log.Warnf("Receive limit reached (%s), closing connection. Messages may have been missed", reason)
+	if conn == nil || !conn.overloaded.CompareAndSwap(false, true) {
+		return
+	}
+	overload := &ReceiveQueueOverload{Generation: conn.generation, Reason: reason}
+	for {
+		previous := cli.receiveOverload.Load()
+		if previous != nil && previous.Generation >= overload.Generation {
+			break
+		} else if cli.receiveOverload.CompareAndSwap(previous, overload) {
+			break
+		}
+	}
+	conn.close()
+}
 
 // NewClient initializes a new WhatsApp web client.
 //
@@ -867,16 +928,30 @@ func (cli *Client) RemoveEventHandlers() {
 }
 
 func (cli *Client) makeFrameHandler(evtCtx context.Context, queue chan *waBinary.Node) func(ctx context.Context, data []byte) {
+	return cli.makeConnFrameHandler(evtCtx, queue, nil)
+}
+
+func (cli *Client) makeConnFrameHandler(evtCtx context.Context, queue chan *waBinary.Node, conn *receiveConn) func(ctx context.Context, data []byte) {
 	return func(ctx context.Context, data []byte) {
-		cli.handleFrame(ctx, evtCtx, data, queue)
+		cli.handleConnFrame(ctx, evtCtx, data, queue, conn)
 	}
 }
 
 func (cli *Client) handleFrame(ctx, evtCtx context.Context, data []byte, queue chan *waBinary.Node) {
+	cli.handleConnFrame(ctx, evtCtx, data, queue, nil)
+}
+
+// handleConnFrame handles a frame from the given connection. conn is nil when the caller has no
+// connection to close; a node that hits a receive limit is then only dropped.
+func (cli *Client) handleConnFrame(ctx, evtCtx context.Context, data []byte, queue chan *waBinary.Node, conn *receiveConn) {
 	decompressed, err := waBinary.Unpack(data)
 	if err != nil {
 		cli.Log.Warnf("Failed to decompress frame: %v", err)
-		cli.Log.Debugf("Errored frame hex: %s", hex.EncodeToString(data))
+		if errors.Is(err, waBinary.ErrFrameTooLarge) {
+			cli.closeOverloadedConn(conn, ReceiveFrameSizeLimit)
+		} else {
+			cli.Log.Debugf("Errored frame hex: %s", hex.EncodeToString(data))
+		}
 		return
 	}
 	node, err := waBinary.Unmarshal(decompressed)
@@ -909,13 +984,11 @@ func (cli *Client) handleFrame(ctx, evtCtx context.Context, data []byte, queue c
 		case queue <- node:
 		case <-ctx.Done():
 		default:
-			cli.Log.Warnf("Handler queue is full, message ordering is no longer guaranteed")
-			go func() {
-				select {
-				case queue <- node:
-				case <-ctx.Done():
-				}
-			}()
+			cli.closeOverloadedConn(conn, ReceiveQueueItemLimit)
+			if node.Tag == "stream:error" {
+				// The connection is closing either way, but a logout or replacement must still be reported.
+				go cli.handleStreamError(evtCtx, node)
+			}
 		}
 	} else if node.Tag != "ack" {
 		cli.Log.Debugf("Didn't handle WhatsApp node %s", node.Tag)
