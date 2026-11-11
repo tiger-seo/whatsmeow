@@ -61,11 +61,16 @@ func (cli *Client) keepAliveLoop(ctx, connCtx context.Context) {
 }
 
 func (cli *Client) sendKeepAlive(ctx context.Context) (isSuccess, shouldContinue bool) {
-	respCh, err := cli.sendIQAsync(ctx, infoQuery{
+	id := cli.generateRequestID()
+	respCh, _, err := cli.sendIQAsyncAndGetData(ctx, &infoQuery{
+		ID:        id,
 		Namespace: "w:p",
 		Type:      "get",
 		To:        types.ServerJID,
 	})
+	if err == nil {
+		defer cli.cancelResponse(id, respCh)
+	}
 	if ctx.Err() != nil {
 		return false, false
 	} else if err != nil {

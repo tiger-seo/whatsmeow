@@ -63,8 +63,12 @@ func (cli *Client) waitResponse(reqID string) chan *waBinary.Node {
 
 func (cli *Client) cancelResponse(reqID string, ch chan *waBinary.Node) {
 	cli.responseWaitersLock.Lock()
-	close(ch)
-	delete(cli.responseWaiters, reqID)
+	// The waiter may already have received its response, been cleared on disconnect,
+	// or been replaced by a newer request with the same ID.
+	if cli.responseWaiters[reqID] == ch {
+		close(ch)
+		delete(cli.responseWaiters, reqID)
+	}
 	cli.responseWaitersLock.Unlock()
 }
 
@@ -108,7 +112,7 @@ type infoQuery struct {
 	NoRetry bool
 }
 
-func (cli *Client) sendIQAsyncAndGetData(ctx context.Context, query *infoQuery) (<-chan *waBinary.Node, []byte, error) {
+func (cli *Client) sendIQAsyncAndGetData(ctx context.Context, query *infoQuery) (chan *waBinary.Node, []byte, error) {
 	if cli == nil {
 		return nil, nil, ErrClientIsNil
 	}
@@ -176,8 +180,10 @@ func (cli *Client) sendIQ(ctx context.Context, query infoQuery) (*waBinary.Node,
 		}
 		return res, nil
 	case <-ctx.Done():
+		cli.cancelResponse(query.ID, resChan)
 		return nil, ctx.Err()
 	case <-time.After(query.Timeout):
+		cli.cancelResponse(query.ID, resChan)
 		return nil, ErrIQTimedOut
 	}
 }
@@ -222,8 +228,10 @@ func (cli *Client) retryFrame(
 	select {
 	case resp = <-respChan:
 	case <-ctx.Done():
+		cli.cancelResponse(id, respChan)
 		return nil, ctx.Err()
 	case <-timeoutChan:
+		cli.cancelResponse(id, respChan)
 		// FIXME this error isn't technically correct (but works for now - the timeout param is only used from sendIQ)
 		return nil, ErrIQTimedOut
 	}
