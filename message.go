@@ -54,10 +54,11 @@ func (cli *Client) handleEncryptedMessage(ctx context.Context, node *waBinary.No
 		cli.StoreLIDPNMapping(ctx, info.RecipientAlt, info.Chat)
 	}
 	if info.VerifiedName != nil && len(info.VerifiedName.Details.GetVerifiedName()) > 0 {
-		go cli.updateBusinessName(ctx, info.Sender, info.SenderAlt, info, info.VerifiedName.Details.GetVerifiedName())
+		// Name updates write to the device store, so they run here and not in a goroutine per message.
+		cli.updateBusinessName(ctx, info.Sender, info.SenderAlt, info, info.VerifiedName.Details.GetVerifiedName())
 	}
 	if len(info.PushName) > 0 && info.PushName != "-" && (cli.MessengerConfig == nil || info.PushName != "username") {
-		go cli.updatePushName(ctx, info.Sender, info.SenderAlt, info, info.PushName)
+		cli.updatePushName(ctx, info.Sender, info.SenderAlt, info, info.PushName)
 	}
 	if info.Sender.Server == types.NewsletterServer {
 		var cancelled bool
