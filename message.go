@@ -332,7 +332,11 @@ func (cli *Client) decryptMessages(ctx context.Context, info *types.MessageInfo,
 			return
 		}
 		cli.backgroundIfAsyncAck(func() {
-			cli.immediateRequestMessageFromPhone(ctx, info)
+			// Another account can cause this placeholder, for example by sending a view-once message, so the phone is
+			// only asked for the message when the client opted in.
+			if cli.phoneRerequestEnabled() {
+				cli.immediateRequestMessageFromPhone(ctx, info)
+			}
 			cli.sendAck(ctx, node, 0)
 		})
 		return

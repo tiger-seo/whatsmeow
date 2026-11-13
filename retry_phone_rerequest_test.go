@@ -12,10 +12,12 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	waBinary "go.mau.fi/whatsmeow/binary"
 	"go.mau.fi/whatsmeow/store"
 	"go.mau.fi/whatsmeow/types"
+	"go.mau.fi/whatsmeow/types/events"
 	waLog "go.mau.fi/whatsmeow/util/log"
 )
 
@@ -89,5 +91,44 @@ func TestPhoneRerequestEnabled(t *testing.T) {
 	cli.MessengerConfig = &MessengerConfig{}
 	if cli.phoneRerequestEnabled() {
 		t.Fatal("enabled with a messenger config")
+	}
+}
+
+// TestUnavailablePlaceholderDoesNotRerequestFromPhoneUnlessEnabled delivers an "unavailable" placeholder, which the
+// server sends to a linked device when another account sends a view-once message, with synchronous and asynchronous
+// acks while AutomaticMessageRerequestFromPhone is off. The placeholder is still acknowledged, but nothing is
+// requested from the phone. The test client has no session store, so an attempted peer send would fail the test.
+func TestUnavailablePlaceholderDoesNotRerequestFromPhoneUnlessEnabled(t *testing.T) {
+	for _, syncAck := range []bool{true, false} {
+		t.Run(fmt.Sprintf("syncAck=%t", syncAck), func(t *testing.T) {
+			own := types.NewJID("self", types.DefaultUserServer)
+			log := newRecordingLog()
+			cli := NewClient(&store.Device{ID: &own}, log)
+			cli.SynchronousAck = syncAck
+
+			sender := types.NewJID("stranger", types.DefaultUserServer)
+			node := &waBinary.Node{
+				Tag:     "message",
+				Attrs:   waBinary.Attrs{"id": "MSG2", "from": sender, "t": "123"},
+				Content: []waBinary.Node{{Tag: "unavailable", Attrs: waBinary.Attrs{"type": "view_once"}}},
+			}
+			info := &types.MessageInfo{MessageSource: types.MessageSource{Chat: sender, Sender: sender}, ID: "MSG2"}
+			done := make(chan struct{})
+			cli.AddEventHandler(func(evt any) {
+				if u, ok := evt.(*events.UndecryptableMessage); ok && u.IsUnavailable {
+					close(done)
+				}
+			})
+			cli.decryptMessages(context.Background(), info, node)
+			<-done
+			if !syncAck {
+				// The asynchronous path runs in a goroutine; give it the same chance to act.
+				time.Sleep(200 * time.Millisecond)
+			}
+			if log.contains("unavailable message MSG2 to phone") || log.contains("Requested message MSG2") ||
+				log.contains("panicked") {
+				t.Fatal("the placeholder's message was requested from the phone although the setting is off")
+			}
+		})
 	}
 }
