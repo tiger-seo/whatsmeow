@@ -437,8 +437,14 @@ func (cli *Client) cancelDelayedRequestFromPhone(msgID types.MessageID) {
 // This is only used if Client.AutomaticMessageRerequestFromPhone is true.
 var RequestFromPhoneDelay = 5 * time.Second
 
+// phoneRerequestEnabled reports whether a message that failed to decrypt may be requested from the user's phone.
+// Both the delayed request and the immediate one sent with synchronous acks use it.
+func (cli *Client) phoneRerequestEnabled() bool {
+	return cli.AutomaticMessageRerequestFromPhone && cli.MessengerConfig == nil
+}
+
 func (cli *Client) delayedRequestMessageFromPhone(info *types.MessageInfo) {
-	if !cli.AutomaticMessageRerequestFromPhone || cli.MessengerConfig != nil {
+	if !cli.phoneRerequestEnabled() {
 		return
 	}
 	cli.pendingPhoneRerequestsLock.Lock()
@@ -504,7 +510,7 @@ func (cli *Client) sendRetryReceipt(ctx context.Context, node *waBinary.Node, in
 		cli.Log.Warnf("Not sending any more retry receipts for %s", id)
 		return
 	}
-	if retryCount == 1 {
+	if retryCount == 1 && cli.phoneRerequestEnabled() {
 		if cli.SynchronousAck {
 			cli.immediateRequestMessageFromPhone(ctx, info)
 		} else {
